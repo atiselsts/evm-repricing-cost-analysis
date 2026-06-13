@@ -1,0 +1,4 @@
+# foundry.toml
+[profile.default]
+optimizer = false
+via_ir = false

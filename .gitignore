@@ -1,0 +1,7 @@
+*.md
+.claude
+notes
+/target
+/contracts/out
+/contracts/cache
+/contracts/lib

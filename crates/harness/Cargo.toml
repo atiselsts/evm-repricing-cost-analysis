@@ -1,0 +1,22 @@
+[package]
+name    = "harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "harness"
+path = "src/main.rs"
+
+[dependencies]
+gas-schedule  = { workspace = true }
+repricer-evm  = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+anyhow        = { workspace = true }
+clap          = { workspace = true }
+
+[dev-dependencies]
+gas-schedule  = { workspace = true }
+repricer-evm  = { workspace = true }
+serde_json    = { workspace = true }
+anyhow        = { workspace = true }

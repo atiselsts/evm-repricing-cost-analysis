@@ -1,0 +1,18 @@
+[package]
+name    = "repricer-evm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gas-schedule           = { workspace = true }
+revm                   = { workspace = true }
+revm-interpreter       = { workspace = true }
+revm-handler           = { workspace = true }
+revm-context           = { workspace = true }
+revm-context-interface = { workspace = true }
+revm-inspector         = { workspace = true }
+revm-primitives        = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+hex        = { workspace = true }
