@@ -33,6 +33,11 @@ impl OpcodeCounter {
         self.count(0x54)
     }
 
+    /// Total SSTORE executions (all categories combined).
+    pub fn sstore_count(&self) -> u64 {
+        self.count(0x55)
+    }
+
     /// Gas attributable to compute opcodes under the given schedule (static
     /// GasTable portion only — does not include per-word/per-byte dynamic costs).
     pub fn compute_gas_used(&self, schedule: &GasSchedule) -> u64 {

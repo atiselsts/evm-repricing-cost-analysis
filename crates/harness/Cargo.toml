@@ -16,7 +16,9 @@ anyhow        = { workspace = true }
 clap          = { workspace = true }
 
 [dev-dependencies]
-gas-schedule  = { workspace = true }
-repricer-evm  = { workspace = true }
-serde_json    = { workspace = true }
-anyhow        = { workspace = true }
+gas-schedule              = { workspace = true }
+repricer-evm              = { workspace = true }
+serde_json                = { workspace = true }
+anyhow                    = { workspace = true }
+revm-context-interface    = { workspace = true }
+revm-primitives           = { workspace = true }

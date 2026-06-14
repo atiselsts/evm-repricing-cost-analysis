@@ -147,15 +147,15 @@ pub fn build_envs(
     let bh = &fixture.block_header;
     let tx = &fixture.transaction;
 
-    // CfgEnv — use spec and set custom gas params for EIP-8038
-    let mut cfg = CfgEnv::new_with_spec(SpecId::PRAGUE);
+    // spec drives SpecId and default GasParams; AMSTERDAM activates EIP-8037 state gas
+    let mut cfg = CfgEnv::new_with_spec(schedule.spec);
     cfg.disable_nonce_check = true;
     cfg.disable_balance_check = true;
     cfg.disable_base_fee = true;
     cfg.chain_id = 1;
     apply_gas_params(&mut cfg.gas_params, schedule);
 
-    // BlockEnv
+    // BlockEnv — blob price always uses PRAGUE fraction to avoid u128 overflow
     let blob_excess_gas_and_price = bh.excess_blob_gas.as_deref()
         .map(parse_u64_hex)
         .transpose()?
@@ -229,10 +229,13 @@ pub fn build_envs(
     Ok((cfg, block, tx_env))
 }
 
-/// Override GasParams entries for EIP-8038 SLOAD repricing.
+/// Override GasParams entries for EIP-8038 SLOAD + SSTORE repricing.
 pub fn apply_gas_params(gp: &mut GasParams, schedule: &GasSchedule) {
     gp.override_gas([
+        // cold SLOAD surcharge (index 23): warm_base + this = cold_sload_total
         (GasId::cold_storage_additional_cost(), schedule.cold_sload_surcharge()),
+        // cold SSTORE total (index 24): shared cold cost for SSTORE cold access
+        (GasId::cold_storage_cost(),            schedule.cold_sstore_cost()),
     ]);
 }
 

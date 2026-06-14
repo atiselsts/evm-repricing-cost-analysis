@@ -17,7 +17,7 @@ use crate::runner::apply_gas_params;
 
 /// Deployed bytecode of RepriceProbe (optimizer OFF, via_ir=false).
 const PROBE_DEPLOYED_BYTECODE_HEX: &str =
-    "608060405234801561000f575f5ffd5b5060043610610029575f3560e01c806324b912e51461002d575b5f5ffd5b61004760048036038101906100429190610111565b61005d565b6040516100549190610170565b60405180910390f35b5f60079050805f5b85811015610099576003810183049150600782059150600d818301069150815f5260205f2083019250600181019050610065565b505f5b848110156100b55780548301925060018101905061009c565b505f5b838110156100d1575f54830192506001810190506100b8565b50509392505050565b5f5ffd5b5f819050919050565b6100f0816100de565b81146100fa575f5ffd5b50565b5f8135905061010b816100e7565b92915050565b5f5f5f60608486031215610128576101276100da565b5b5f610135868287016100fd565b9350506020610146868287016100fd565b9250506040610157868287016100fd565b9150509250925092565b61016a816100de565b82525050565b5f6020820190506101835f830184610161565b9291505056fea26469706673582212205e0f766b3562e1d55068bd5cf46ae6cc50d3654c6ba4359d423702e2e2faa92364736f6c63430008230033";
+    "608060405234801561000f575f5ffd5b5060043610610029575f3560e01c806315509d2b1461002d575b5f5ffd5b61004760048036038101906100429190610132565b61005d565b60405161005491906101a5565b60405180910390f35b5f60079050805f5b86811015610099576003810183049150600782059150600d818301069150815f5260205f2083019250600181019050610065565b505f5b858110156100b55780548301925060018101905061009c565b505f5b848110156100d1575f54830192506001810190506100b8565b505f5b838110156100f15760018301816103e801556001810190506100d4565b5050949350505050565b5f5ffd5b5f819050919050565b610111816100ff565b811461011b575f5ffd5b50565b5f8135905061012c81610108565b92915050565b5f5f5f5f6080858703121561014a576101496100fb565b5b5f6101578782880161011e565b94505060206101688782880161011e565b93505060406101798782880161011e565b925050606061018a8782880161011e565b91505092959194509250565b61019f816100ff565b82525050565b5f6020820190506101b85f830184610196565b9291505056fea2646970667358221220c046bfb1400f8b82fff72852f7cf41941134583e68f931408fcebb8dc680cc0a64736f6c63430008230033";
 
 /// Deterministic address for the probe contract.
 pub const PROBE_ADDRESS: Address = Address::new([
@@ -29,8 +29,8 @@ pub const CALLER_ADDRESS: Address = Address::new([
     0xca, 0x11, 0xee, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
 ]);
 
-/// `run(uint256,uint256,uint256)` selector.
-pub const RUN_SELECTOR: [u8; 4] = [0x24, 0xb9, 0x12, 0xe5];
+/// `run(uint256,uint256,uint256,uint256)` selector.
+pub const RUN_SELECTOR: [u8; 4] = [0x15, 0x50, 0x9d, 0x2b];
 
 /// Build the CacheDB for the synthetic probe fixture.
 pub fn build_synthetic_db() -> CacheDB<EmptyDB> {
@@ -65,16 +65,18 @@ pub fn build_synthetic_db() -> CacheDB<EmptyDB> {
 
 /// Build CfgEnv / BlockEnv / TxEnv for a synthetic probe call.
 ///
-/// * `compute_iters` — iterations of the compute loop (1×DIV + 1×SDIV + 1×MOD + 1×KECCAK256 each)
-/// * `cold_reads`   — distinct storage slots read once (cold SLOAD each)
-/// * `warm_reads`   — re-reads of slot 0 (warm SLOAD; requires cold_reads >= 1)
+/// * `compute_iters`   — iterations of the compute loop (1×DIV+1×SDIV+1×MOD+1×KECCAK256 each)
+/// * `cold_reads`      — distinct storage slots read once (cold SLOAD each)
+/// * `warm_reads`      — re-reads of slot 0 (warm SLOAD; requires cold_reads >= 1)
+/// * `new_slot_writes` — 0→nonzero SSTORE to virgin slots 1000..1000+n (EIP-8037 state gas)
 pub fn build_synthetic_envs(
     compute_iters: u64,
     cold_reads: u64,
     warm_reads: u64,
+    new_slot_writes: u64,
     schedule: &GasSchedule,
 ) -> (CfgEnv, BlockEnv, TxEnv) {
-    let mut cfg = CfgEnv::new_with_spec(SpecId::PRAGUE);
+    let mut cfg = CfgEnv::new_with_spec(schedule.spec);
     cfg.disable_nonce_check = true;
     cfg.disable_balance_check = true;
     cfg.disable_base_fee = true;
@@ -92,7 +94,7 @@ pub fn build_synthetic_envs(
         slot_num: 0,
     };
 
-    let calldata = abi_encode_run(compute_iters, cold_reads, warm_reads);
+    let calldata = abi_encode_run(compute_iters, cold_reads, warm_reads, new_slot_writes);
     let tx = TxEnv {
         caller: CALLER_ADDRESS,
         kind: TxKind::Call(PROBE_ADDRESS),
@@ -108,10 +110,10 @@ pub fn build_synthetic_envs(
     (cfg, block, tx)
 }
 
-fn abi_encode_run(compute_iters: u64, cold_reads: u64, warm_reads: u64) -> Vec<u8> {
-    let mut data = Vec::with_capacity(4 + 3 * 32);
+fn abi_encode_run(compute_iters: u64, cold_reads: u64, warm_reads: u64, new_slot_writes: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(4 + 4 * 32);
     data.extend_from_slice(&RUN_SELECTOR);
-    for v in [compute_iters, cold_reads, warm_reads] {
+    for v in [compute_iters, cold_reads, warm_reads, new_slot_writes] {
         let mut word = [0u8; 32];
         word[24..].copy_from_slice(&v.to_be_bytes());
         data.extend_from_slice(&word);

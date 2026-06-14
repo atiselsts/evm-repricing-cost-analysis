@@ -18,18 +18,29 @@ Two repricing proposals are studied:
 - **EIP-8038** (state-access repricing) — updates gas costs for all
   state-access operations. The full EIP covers SLOAD, SSTORE, CALL account
   access, CREATE, EXTCODESIZE/EXTCODECOPY, SELFDESTRUCT, and access-list
-  precomputation costs. **This PoC models only the SLOAD portion** (warm base
-  and cold surcharge) using a hypothetical 3× multiplier; all other EIP-8038
-  changes are out of scope. See [Scope limitations](#scope-limitations) below.
+  precomputation costs. **This PoC models only the SLOAD and cold SSTORE
+  portions** using a hypothetical 3× multiplier; all other EIP-8038 changes
+  are out of scope. See [Scope limitations](#scope-limitations) below.
   The EIP's new values are still TBD at the time of writing and may be
   calibrated to the prevailing block gas limit.
 
-**Core finding:** on a real Aave v3 `liquidationCall` transaction, compute
-repricing (EIP-7904 hypothetical values) adds < 1% gas overhead. State-read
-repricing at the 60 M block-limit calibration (EIP-8038 3× scenario) adds
-+61% when execution paths are held constant; at a 200 M block-limit
-calibration (≈10× baseline) it adds +276%. For liquidation bots, SLOAD cost
-dominates; compute cost is negligible.
+- **EIP-8037** (SSTORE state gas) — each new 0→nonzero storage slot creation
+  incurs an additional 97 920 gas (SSTORE_SET_BYTES=64 × CPSB_GLAMSTERDAM=1 530),
+  activated automatically by switching the EVM spec to AMSTERDAM.
+
+**Core findings:**
+- EIP-7904 compute repricing adds < 1% gas overhead — negligible for DeFi.
+- EIP-8038 SLOAD repricing (3× scenario, 60 M block) adds +48–62% gas across
+  all measured transactions; scaled to a 200 M block, +218–276%.
+- EIP-8037 SSTORE state gas has zero impact on liquidations and simple/semi-complex
+  AMM arb (no new slot creation). It adds +85% on a complex 12 M gas AMM arb
+  that initialises new on-chain positions — and pushes that tx above its natural
+  gas limit, causing it to fail without a manual limit increase.
+- SLOAD repricing dominates for DeFi liquidations and simple arb; state gas
+  dominates for complex AMM arb that creates new positions.
+
+See [`glamsterdam-repricing.md`](glamsterdam-repricing.md) for full results tables
+across all four measured transactions.
 
 ## Method
 
@@ -43,7 +54,7 @@ dominates; compute cost is negligible.
      `EthInstructions::insert_gas` after EVM construction. Covers compute
      opcodes and the SLOAD warm base.
    - *Dynamic params* (`GasParams`) — patched via `override_gas` before
-     construction. Covers the SLOAD cold surcharge.
+     construction. Covers the SLOAD cold surcharge and cold SSTORE total.
 
 3. **Replay**: `evm.inspect_one_tx(tx)` with an `OpcodeCounter` inspector that
    records execution counts per opcode. Gas breakdown is derived post-run by
@@ -54,8 +65,8 @@ dominates; compute cost is negligible.
    ```json
    {
      "gas_used": 781399,
-     "schedule": "eip7904",
-     "breakdown": { "compute": 15135, "other": 772289 },
+     "schedule": "eip8038",
+     "breakdown": { "compute": 9110, "other": 1252089 },
      "status": "success"
    }
    ```
@@ -74,71 +85,47 @@ dominates; compute cost is negligible.
 
 ## Gas schedules
 
-EIP-7904 (compute) and EIP-8038 (state access) are evaluated **independently**.
+EIP-7904 (compute) and EIP-8037/8038 (state access) are evaluated **independently**.
 
-| Schedule        | DIV | SDIV | MOD | KECCAK256 base | warm SLOAD | cold SLOAD | block gas limit calibration |
-|-----------------|----:|-----:|----:|---------------:|-----------:|-----------:|----------------------------:|
-| `baseline`      |   5 |    5 |   5 |             30 |        100 |      2 100 | — |
-| `eip7904`       |  15 |   20 |  12 |             45 |        100 |      2 100 | n/a (compute only) |
-| `eip8038`       |   5 |    5 |   5 |             30 |        300 |      6 300 | 60 M (3× baseline) |
-| `eip8038_200m`  |   5 |    5 |   5 |             30 |      1 000 |     21 000 | 200 M (≈10× baseline) |
+**S1/S2 schedules — PRAGUE spec (SLOAD only):**
 
-The `eip8038_200m` costs are derived by scaling the `eip8038` values by
-200 M / 60 M ≈ 3.33× to reflect the proportionally higher state I/O pressure
-at a larger block gas limit. All values remain hypothetical (EIP-8038 new
-costs are TBD in the draft).
+| Schedule        | warm SLOAD | cold SLOAD | cold SSTORE | SpecId | calibration |
+|-----------------|----------:|----------:|----------:|--------|-------------|
+| `baseline`      |       100 |     2 100 |     2 100 | PRAGUE | mainnet     |
+| `eip7904`       |       100 |     2 100 |     2 100 | PRAGUE | compute opcodes only |
+| `eip8038`       |       300 |     6 300 |     2 100 | PRAGUE | 60 M (3× SLOAD only) |
+| `eip8038_200m`  |     1 000 |    21 000 |     2 100 | PRAGUE | 200 M (≈10× SLOAD only) |
 
-## Results — Aave v3 liquidationCall (block 24 390 617, tx gas limit 1 169 544)
+**S6 schedules — AMSTERDAM spec (EIP-8037 state gas + EIP-8038 SLOAD + SSTORE):**
 
-### EIP-7904 compute repricing (block gas limit unchanged at 60 M)
+| Schedule             | warm SLOAD | cold SLOAD | cold SSTORE | SpecId    | calibration |
+|----------------------|----------:|----------:|----------:|-----------|-------------|
+| `eip8037`            |       100 |     2 100 |     2 100 | AMSTERDAM | state gas only |
+| `eip8038_sstore`     |       300 |     6 300 |     6 300 | AMSTERDAM | 60 M (3× SLOAD + SSTORE) |
+| `eip8038_sstore_200m`|     1 000 |    21 000 |    21 000 | AMSTERDAM | 200 M (≈10× SLOAD + SSTORE) |
 
-| Schedule   | gas used | Δ vs baseline | Δ%     |
-|------------|--------:|--------------:|-------:|
-| `baseline` | 781 399 | —             | —      |
-| `eip7904`  | 787 424 | +6 025        | +0.77% |
-
-Baseline breakdown: **9 110 gas compute** / **772 289 gas other** (279 SLOADs).
-
-The compute delta (+6 025) is smaller than the cost of a single cold SLOAD
-(2 100). Compute repricing has negligible impact on DeFi liquidations.
-
-### EIP-8038 SLOAD repricing
-
-We used an artificial high gas limit (30 000 000) that eliminates inner-CALL starvation
-even when SLOAD costs a lot more, giving identical execution paths across all schedules.
-The `compute` breakdown field is exactly 9 110 gas for all three runs,
-confirming that the same opcodes execute in the same sequence.
-
-| Schedule       | block gas limit | tx gas limit | gas used  | Δ vs baseline | Δ%      |
-|----------------|---------------:|-------------:|----------:|--------------:|--------:|
-| `baseline`     | 60 M           | 30 M         | 781 399   | —             | —       |
-| `eip8038`      | 60 M           | 30 M         | 1 261 199 | +479 800      | +61.4%  |
-| `eip8038_200m` | 200 M          | 30 M         | 2 940 499 | +2 159 100    | +276.3% |
-
-The delta ratio (2 159 100 / 479 800 ≈ 4.50×) matches the cost ratio exactly:
-(21 000 − 2 100) / (6 300 − 2 100) = (1 000 − 100) / (300 − 100) = 4.5×,
-confirming the gas injection is mechanically correct.
-
-These numbers reflect **SLOAD repricing only**. Full EIP-8038 would add SSTORE,
-CALL, and CREATE repricing on top (see [Scope limitations](#scope-limitations)).
+AMSTERDAM activates EIP-8037 state gas automatically: each 0→nonzero SSTORE to a
+previously nonexistent slot costs an additional 97 920 gas
+(SSTORE_SET_BYTES=64 × CPSB_GLAMSTERDAM=1 530). All EIP-8038 values remain
+hypothetical (TBD in the draft).
 
 ## Scope limitations
 
-This PoC (S1 + S2 + S2-addition) intentionally models a subset of the
-proposed changes:
+This PoC intentionally models a subset of the proposed changes:
 
-**EIP-8038 — implemented (SLOAD only):**
-| Injection point | Implemented |
+**Implemented:**
+| Injection point | Mechanism |
 |---|---|
-| Warm SLOAD base (`WARM_ACCESS` for storage) | yes — static GasTable patch |
-| Cold SLOAD surcharge (`COLD_STORAGE_ACCESS`) | yes — GasParams patch |
+| Warm SLOAD base | static GasTable patch (opcode 0x54) |
+| Cold SLOAD surcharge | `GasId::cold_storage_additional_cost` override |
+| Cold SSTORE total | `GasId::cold_storage_cost` override |
+| SSTORE new-slot state gas (EIP-8037) | `SpecId::AMSTERDAM` — activates automatically |
 
 **EIP-8038 — not yet implemented:**
 | Operation | Current cost | Notes |
 |---|---|---|
 | Cold account access (`COLD_ACCOUNT_ACCESS`) — CALL, BALANCE, EXT* | 2 600 | S5 |
-| SSTORE access + write (`COLD_STORAGE_ACCESS` + `ACCOUNT_WRITE`) | 2 100 + 2 800 | S6 |
-| SSTORE state-creation | 7 000 (`STORAGE_CREATE`) | S6 |
+| SSTORE warm reset (`ACCOUNT_WRITE`) | 2 800 | S6 |
 | `STORAGE_CLEAR_REFUND` | 4 800 | S6 |
 | CREATE / CREATE2 (`CREATE_ACCESS`) | 7 000 | S6 |
 | EXTCODESIZE / EXTCODECOPY extra warm-read | +100 | S5 |
@@ -157,8 +144,8 @@ published.
 
 - **S5** — cold account access repricing (CALL/BALANCE/EXT*) and
   EXTCODESIZE/EXTCODECOPY extra read charge
-- **S6** — SSTORE repricing (access + write + state-creation), CREATE,
-  SELFDESTRUCT, refund changes
+- **S6 (remaining)** — SSTORE warm reset repricing, CREATE, SELFDESTRUCT,
+  refund changes; multi-fixture survey to measure EIP-8037 impact at position open
 - **S7** — intrinsic gas changes (EIP-7976 calldata floor, EIP-7981 access
   list costs)
 - **S3/S4/S8** — Reth archive integration, per-category gas inspector,
@@ -178,9 +165,13 @@ python3 scripts/harvest_prestate.py \
 # Replay under each schedule (natural tx gas limit)
 cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule baseline
 cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip7904
+cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8037
+
 # High tx gas limit — identical execution paths across all schedules (no inner-CALL starvation)
-cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038       --tx-gas-limit 30000000
-cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038-200m  --block-gas-limit 200000000 --tx-gas-limit 30000000
+cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038         --tx-gas-limit 30000000
+cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038-200m    --block-gas-limit 200000000 --tx-gas-limit 30000000
+cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038-sstore  --tx-gas-limit 30000000
+cargo run --bin harness -- --fixture fixtures/0x7b53e92....json --schedule eip8038-sstore200m --block-gas-limit 200000000 --tx-gas-limit 30000000
 
 # Run all acceptance tests
 cargo test --test acceptance -- --nocapture
@@ -194,20 +185,31 @@ python3 scripts/update_probe_bytecode.py
 
 ```
 Cargo.toml                          # workspace (resolver = "2")
+glamsterdam-repricing.md            # full results tables for all measured transactions
+notes                               # tx hashes used as fixtures (plain text)
 crates/
-  gas-schedule/                     # GasSchedule struct + presets
-  repricer-evm/                     # CacheDB builder, EVM runner, OpcodeCounter
-  harness/                          # CLI binary
-    tests/acceptance.rs             # 5 acceptance tests
+  gas-schedule/                     # GasSchedule struct + presets (baseline, eip7904, eip8037/38)
+  repricer-evm/                     # CacheDB builder, EVM runner, OpcodeCounter inspector
+  harness/                          # CLI binary (--fixture / --schedule / --tx-gas-limit)
+    tests/acceptance.rs             # 7 acceptance tests
 fixtures/
-  0x7b53e92....json                 # Aave v3 liquidationCall prestate
+  0x7b53e92....json                 # Aave v3 liquidationCall prestate (block 24 390 617)
+  0x7ab274a....json                 # simple (atomic) AMM arb prestate
+  0x8687c5e....json                 # semi-complex AMM arb prestate
+  0xfa11258....json                 # complex AMM arb prestate (12 M gas)
 contracts/
-  src/RepriceProbe.sol              # Synthetic compute + SLOAD probe
-  test/RepriceProbe.t.sol           # Foundry tests (loop termination, gas linearity)
+  src/RepriceProbe.sol              # Synthetic compute + SLOAD + SSTORE probe contract
+  test/RepriceProbe.t.sol           # Foundry tests (loop termination, gas linearity, SSTORE)
   foundry.toml                      # optimizer off, via_ir false
+results/
+  liquidation-repricing.csv         # per-schedule gas data for the Aave v3 liquidation
+  amm-arb-repricing.csv             # per-schedule gas data for all three AMM arb transactions
 scripts/
-  harvest_prestate.py               # Captures prestate fixtures via RPC
-  update_probe_bytecode.py          # Syncs compiled bytecode into synthetic.rs
+  harvest_prestate.py               # captures prestate fixtures via RPC (debug_traceTransaction)
+  update_probe_bytecode.py          # syncs compiled RepriceProbe bytecode into synthetic.rs
+subtasks.md                         # detailed S1–S8 milestone descriptions
+s2-addition.md                      # design notes for the S2 SLOAD repricing addition
+s6-addition.md                      # design notes for the S6 SSTORE repricing addition
 ```
 
 ## Acceptance tests
@@ -218,4 +220,6 @@ scripts/
 | 2 | `test_mechanism_correctness` | `eip7904` − `baseline` = hand-computed 470 gas for 10 compute iters |
 | 3 | `test_real_tx_demonstration` | `eip7904` ≥ `baseline` on the liquidation fixture |
 | 4 | `test_sload_mechanism` | `eip8038` − `baseline` = hand-computed 21 600 gas (5 cold + 3 warm) |
-| 5 | `test_thesis_preview` | EIP-8038 SLOAD Δ (353 647) >> EIP-7904 compute Δ (6 025) on the DeFi tx (natural tx limit) |
+| 5 | `test_thesis_preview` | EIP-8038 SLOAD Δ >> EIP-7904 compute Δ on the Aave liquidation |
+| 6 | `test_eip8037_sstore_new_slot` | `eip8037` − `baseline` = hand-computed 404 100 gas for 5 new slots (80 820 each) |
+| 7 | `test_sstore_impact_liquidation` | `eip8037` gas ≥ `baseline` (Δ = 0: no new slots in liquidation) |

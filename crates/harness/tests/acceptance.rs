@@ -1,10 +1,12 @@
-/// Acceptance tests — all five criteria from CLAUDE.md must pass.
+/// Acceptance tests — all seven criteria from CLAUDE.md / s6-addition.md must pass.
 use gas_schedule::GasSchedule;
 use repricer_evm::{
     fixture::{parse_u64_hex, Fixture},
     runner::{self, run_db},
     synthetic,
 };
+use revm_context_interface::cfg::gas_params::{GasId, GasParams};
+use revm_primitives::hardfork::SpecId;
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -61,8 +63,8 @@ fn test_mechanism_correctness() {
 
     println!("Expected EIP-7904 compute delta: {expected_delta} gas");
 
-    let (cfg_base, blk, tx) = synthetic::build_synthetic_envs(iters, 0, 0, &base);
-    let (cfg_eip, _, _) = synthetic::build_synthetic_envs(iters, 0, 0, &eip);
+    let (cfg_base, blk, tx) = synthetic::build_synthetic_envs(iters, 0, 0, 0, &base);
+    let (cfg_eip, _, _) = synthetic::build_synthetic_envs(iters, 0, 0, 0, &eip);
 
     let (gas_base, _) = run_db(synthetic::build_synthetic_db(), cfg_base, blk.clone(), tx.clone(), &base, "baseline")
         .expect("baseline run");
@@ -117,8 +119,8 @@ fn test_sload_mechanism() {
 
     println!("Expected EIP-8038 SLOAD delta: {expected_delta} gas");
 
-    let (cfg_base, blk, tx) = synthetic::build_synthetic_envs(0, cold, warm, &base);
-    let (cfg_eip, _, _) = synthetic::build_synthetic_envs(0, cold, warm, &eip8038);
+    let (cfg_base, blk, tx) = synthetic::build_synthetic_envs(0, cold, warm, 0, &base);
+    let (cfg_eip, _, _) = synthetic::build_synthetic_envs(0, cold, warm, 0, &eip8038);
 
     let (gas_base, ctr_base) = run_db(
         synthetic::build_synthetic_db(), cfg_base, blk.clone(), tx.clone(), &base, "baseline",
@@ -161,5 +163,81 @@ fn test_thesis_preview() {
         delta_8038 > delta_7904,
         "EIP-8038 SLOAD delta ({delta_8038}) should exceed EIP-7904 compute delta ({delta_7904}) \
          for a DeFi liquidation tx"
+    );
+}
+
+// ── Criterion 6: EIP-8037 SSTORE new-slot mechanism correctness ──────────────
+
+#[test]
+fn test_eip8037_sstore_new_slot() {
+    let n = 5u64; // 5 new storage slots written (0->nonzero)
+
+    let base    = GasSchedule::baseline();
+    let eip8037 = GasSchedule::eip8037();
+
+    // Hand-compute expected delta by reading GasParams for each spec.
+    // Under AMSTERDAM: cost per new warm slot = sstore_static(100)
+    //                  + sstore_set_without_load(2800) + state_gas(97920) = 100820
+    // Under PRAGUE:    cost per new warm slot = sstore_static(100)
+    //                  + sstore_set_without_load(19900)                   =  20000
+    // Delta per slot = 100820 - 20000 = 80820
+    // (equivalent to: state_gas + set_without_load_ams - set_without_load_pra)
+    let base_gp = GasParams::new_spec(SpecId::PRAGUE);
+    let ams_gp  = GasParams::new_spec(SpecId::AMSTERDAM);
+    let expected_delta = n * (
+        ams_gp.get(GasId::sstore_set_state_gas())
+        + ams_gp.get(GasId::sstore_set_without_load_cost())
+        - base_gp.get(GasId::sstore_set_without_load_cost())
+    );
+
+    println!("Expected EIP-8037 SSTORE new-slot delta: {expected_delta} gas ({} per slot)", expected_delta / n);
+
+    // No compute or SLOAD iters; all gas delta comes from the new-slot SSTOREs.
+    let (cfg_base, blk, tx) = synthetic::build_synthetic_envs(0, 0, 0, n, &base);
+    let (cfg_eip, _, _)     = synthetic::build_synthetic_envs(0, 0, 0, n, &eip8037);
+
+    let (gas_base, ctr_base) = run_db(
+        synthetic::build_synthetic_db(), cfg_base, blk.clone(), tx.clone(), &base, "baseline",
+    ).expect("baseline");
+    let (gas_eip, ctr_eip) = run_db(
+        synthetic::build_synthetic_db(), cfg_eip, blk, tx, &eip8037, "eip8037",
+    ).expect("eip8037");
+
+    let actual_delta = gas_eip.saturating_sub(gas_base);
+    println!(
+        "Baseline={gas_base}, EIP-8037={gas_eip}, delta={actual_delta} (expected={expected_delta})"
+    );
+    println!("SSTORE counts: baseline={}, eip8037={}", ctr_base.sstore_count(), ctr_eip.sstore_count());
+
+    assert_eq!(actual_delta, expected_delta, "SSTORE new-slot delta must match hand-computed value");
+}
+
+// ── Criterion 7: EIP-8037 SSTORE impact on real liquidation tx ───────────────
+
+#[test]
+fn test_sstore_impact_liquidation() {
+    let fixture = load_fixture();
+    let base    = GasSchedule::baseline();
+    let eip8037 = GasSchedule::eip8037();
+    let eip8038 = GasSchedule::eip8038(); // PRAGUE-based SLOAD repricing (S2 result)
+
+    let gas_base   = runner::run_fixture(&fixture, &base,    "baseline", None, None).expect("baseline").gas_used;
+    let gas_8037   = runner::run_fixture(&fixture, &eip8037, "eip8037",  None, None).expect("eip8037").gas_used;
+    let gas_8038   = runner::run_fixture(&fixture, &eip8038, "eip8038",  None, None).expect("eip8038").gas_used;
+
+    let delta_8037 = gas_8037.saturating_sub(gas_base);
+    let delta_8038 = gas_8038.saturating_sub(gas_base);
+
+    println!(
+        "Real liquidation — SSTORE vs SLOAD repricing:\n  baseline      = {gas_base}\n  +EIP-8037     = {gas_8037}  (SSTORE state gas delta {delta_8037})\n  +EIP-8038     = {gas_8038}  (SLOAD repricing delta  {delta_8038})\n  SSTORE > SLOAD impact: {}",
+        delta_8037 > delta_8038
+    );
+
+    // The delta must be non-negative (AMSTERDAM is at least as expensive as PRAGUE
+    // for any tx because the SSTORE set cost changes from 20000 to 100820 for new slots,
+    // but reset cost stays the same — so a tx with zero new slots has delta=0).
+    assert!(
+        gas_8037 >= gas_base,
+        "EIP-8037 (AMSTERDAM) must not be cheaper than baseline (PRAGUE)"
     );
 }
