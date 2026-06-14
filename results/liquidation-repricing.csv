@@ -1,7 +1,7 @@
-tx_label,tx_hash,description,receipt_gas,natural_tx_gas_limit,schedule,tx_gas_limit_used,block_gas_limit,gas_used,delta_vs_baseline,delta_pct,compute_gas,other_gas,execution_complete,fits_natural_gas_budget
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,baseline,1169544,60000000,781399,0,0.00%,9110,772289,yes,yes
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,eip8037,1169544,60000000,781399,0,0.00%,9110,772289,yes,yes
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,eip8038,30000000,60000000,1261199,479800,61.41%,9110,1252089,yes,no
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,eip8038_sstore,30000000,60000000,1265399,484000,61.92%,9110,1256289,yes,no
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,eip8038_200m,30000000,200000000,2940499,2159100,276.34%,9110,2931389,yes,no
-liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,1169544,eip8038_sstore200m,30000000,200000000,2959399,2178000,278.77%,9110,2950289,yes,no
+tx_label,tx_hash,description,receipt_gas,tx_gas_limit,schedule,block_gas_limit,gas_used,delta_vs_baseline,delta_pct,compute_gas,path_diverged
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,baseline,60000000,781399,0,0.00%,9110,no
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,eip8037,60000000,781399,0,0.00%,9110,no
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,eip8038,60000000,1261199,479800,61.40%,9110,no
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,eip8038_sstore,60000000,1265399,484000,61.94%,9110,no
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,eip8038_200m,200000000,2940499,2159100,276.31%,9110,no
+liquidation,0x7b53e92ca7971da61aaee1e33666e7f21f58b573d0b5a52fcedc913d6cc92629,Aave v3 liquidationCall,781399,16777216,eip8038_sstore200m,200000000,2959399,2178000,278.73%,9110,no

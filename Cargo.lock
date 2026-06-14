@@ -1348,6 +1348,7 @@ dependencies = [
  "gas-schedule",
  "repricer-evm",
  "revm-context-interface",
+ "revm-interpreter",
  "revm-primitives",
  "serde",
  "serde_json",

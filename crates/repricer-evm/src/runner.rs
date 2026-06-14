@@ -16,7 +16,7 @@ use revm_context_interface::cfg::gas_params::{GasId, GasParams};
 
 use crate::{
     fixture::{Fixture, parse_address_hex, parse_b256_hex, parse_bytes_hex, parse_u64_hex, parse_u128_hex},
-    inspector::OpcodeCounter,
+    inspector::{GasBreakdown, OpcodeCounter, SstoreAddressTracer, SstoreClassifier, SstoreStats},
 };
 
 // ── public result type ────────────────────────────────────────────────────────
@@ -72,6 +72,53 @@ pub fn run_db(
     let mut counter = OpcodeCounter::new();
     let gas_used = execute(db, cfg, block, tx, schedule, &mut counter)?;
     Ok((gas_used, counter))
+}
+
+/// Like `run_db` but also returns `(total_gas_spent, inner_refunded)` for diagnostics.
+pub fn run_db_detailed(
+    db: CacheDB<EmptyDB>,
+    cfg: CfgEnv,
+    block: BlockEnv,
+    tx: TxEnv,
+    schedule: &GasSchedule,
+) -> anyhow::Result<(u64, u64, u64, OpcodeCounter)> {
+    let spec = cfg.spec;
+    let mut counter = OpcodeCounter::new();
+
+    let mut ctx = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|c| *c = cfg);
+    ctx.block = block;
+    let mut evm = ctx.build_mainnet_with_inspector(&mut counter);
+
+    {
+        use revm_interpreter::instructions::gas_table_spec;
+        let default_table = gas_table_spec(spec);
+        let mut reprice = |opcode: u8, new_cost: u64| {
+            if new_cost as u16 != default_table[opcode as usize] {
+                evm.instruction.insert_gas(opcode, new_cost as u16);
+            }
+        };
+        reprice(0x02, schedule.mul);
+        reprice(0x04, schedule.div);
+        reprice(0x05, schedule.sdiv);
+        reprice(0x06, schedule.r#mod);
+        reprice(0x07, schedule.smod);
+        reprice(0x08, schedule.addmod);
+        reprice(0x09, schedule.mulmod);
+        reprice(0x0a, schedule.exp_base);
+        reprice(0x20, schedule.keccak256_base);
+        reprice(0x54, schedule.warm_access_cost);
+    }
+
+    let result = evm.inspect_one_tx(tx)?;
+    let gas_used    = result.tx_gas_used();
+    let total_spent = result.gas().total_gas_spent();
+    let state_gas   = result.gas().state_gas_spent_final();
+    let refunded    = result.gas().inner_refunded();
+    // Report execution gas (total - state) in total_spent slot, state gas in refunded slot
+    let _ = refunded;
+    Ok((gas_used, total_spent - state_gas, state_gas, counter))
 }
 
 // ── CacheDB builder ──────────────────────────────────────────────────────────
@@ -227,6 +274,141 @@ pub fn build_envs(
     };
 
     Ok((cfg, block, tx_env))
+}
+
+/// Build the (address, slot) → initial_value map used by `SstoreClassifier`.
+pub fn build_initial_storage(
+    fixture: &Fixture,
+) -> anyhow::Result<std::collections::HashMap<(Address, U256), U256>> {
+    let mut map = std::collections::HashMap::new();
+    for (addr_hex, state) in &fixture.prestate {
+        let addr = Address::from(parse_address_hex(addr_hex)
+            .with_context(|| format!("bad address {addr_hex}"))?);
+        if let Some(storage) = &state.storage {
+            for (slot_hex, val_hex) in storage {
+                let slot = U256::from_be_bytes(
+                    parse_b256_hex(slot_hex)
+                        .with_context(|| format!("bad slot {slot_hex}"))?,
+                );
+                let val = U256::from_be_bytes(
+                    parse_b256_hex(val_hex)
+                        .with_context(|| format!("bad val {val_hex}"))?,
+                );
+                map.insert((addr, slot), val);
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Run a fixture with `GasBreakdown` inspector and return (gas_used, breakdown).
+pub fn run_fixture_gas_breakdown(
+    fixture: &Fixture,
+    schedule: &GasSchedule,
+    block_gas_limit_override: Option<u64>,
+    tx_gas_limit_override: Option<u64>,
+) -> anyhow::Result<(u64, GasBreakdown)> {
+    let db = build_db(fixture)?;
+    let (cfg, block, tx) = build_envs(fixture, schedule, block_gas_limit_override, tx_gas_limit_override)?;
+    let mut bd = GasBreakdown::new();
+    let spec = cfg.spec;
+    let mut ctx = revm::Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|c| *c = cfg);
+    ctx.block = block;
+    let mut evm = ctx.build_mainnet_with_inspector(&mut bd);
+    {
+        use revm_interpreter::instructions::gas_table_spec;
+        let default_table = gas_table_spec(spec);
+        let mut reprice = |opcode: u8, new_cost: u64| {
+            if new_cost as u16 != default_table[opcode as usize] {
+                evm.instruction.insert_gas(opcode, new_cost as u16);
+            }
+        };
+        reprice(0x02, schedule.mul);
+        reprice(0x04, schedule.div);
+        reprice(0x05, schedule.sdiv);
+        reprice(0x06, schedule.r#mod);
+        reprice(0x07, schedule.smod);
+        reprice(0x08, schedule.addmod);
+        reprice(0x09, schedule.mulmod);
+        reprice(0x0a, schedule.exp_base);
+        reprice(0x20, schedule.keccak256_base);
+        reprice(0x54, schedule.warm_access_cost);
+    }
+    let result = evm.inspect_one_tx(tx)?;
+    Ok((result.tx_gas_used(), bd))
+}
+
+/// Run a fixture with `SstoreClassifier` and return the SSTORE statistics.
+pub fn classify_sstores_fixture(
+    fixture: &Fixture,
+    schedule: &GasSchedule,
+    block_gas_limit_override: Option<u64>,
+    tx_gas_limit_override: Option<u64>,
+) -> anyhow::Result<SstoreStats> {
+    let db = build_db(fixture)?;
+    let (cfg, block, tx) = build_envs(fixture, schedule, block_gas_limit_override, tx_gas_limit_override)?;
+    let initial = build_initial_storage(fixture)?;
+    let mut classifier = SstoreClassifier::new(initial);
+
+    let spec = cfg.spec;
+    let mut ctx = revm::Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|c| *c = cfg);
+    ctx.block = block;
+    let mut evm = ctx.build_mainnet_with_inspector(&mut classifier);
+    {
+        use revm_interpreter::instructions::gas_table_spec;
+        let default_table = gas_table_spec(spec);
+        let mut reprice = |opcode: u8, new_cost: u64| {
+            if new_cost as u16 != default_table[opcode as usize] {
+                evm.instruction.insert_gas(opcode, new_cost as u16);
+            }
+        };
+        reprice(0x02, schedule.mul);
+        reprice(0x04, schedule.div);
+        reprice(0x05, schedule.sdiv);
+        reprice(0x06, schedule.r#mod);
+        reprice(0x07, schedule.smod);
+        reprice(0x08, schedule.addmod);
+        reprice(0x09, schedule.mulmod);
+        reprice(0x0a, schedule.exp_base);
+        reprice(0x20, schedule.keccak256_base);
+        reprice(0x54, schedule.warm_access_cost);
+    }
+    evm.inspect_one_tx(tx)?;
+    Ok(classifier.stats)
+}
+
+/// Run a fixture with `SstoreAddressTracer` and return per-SSTORE (addr, key, new_val).
+pub fn run_fixture_sstore_addresses(
+    fixture: &Fixture,
+    schedule: &GasSchedule,
+    block_gas_limit_override: Option<u64>,
+    tx_gas_limit_override: Option<u64>,
+) -> anyhow::Result<Vec<(Address, U256, U256)>> {
+    let db = build_db(fixture)?;
+    let (cfg, block, tx) = build_envs(fixture, schedule, block_gas_limit_override, tx_gas_limit_override)?;
+    let mut tracer = SstoreAddressTracer::new();
+    let spec = cfg.spec;
+    let mut ctx = revm::Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|c| *c = cfg);
+    ctx.block = block;
+    let mut evm = ctx.build_mainnet_with_inspector(&mut tracer);
+    {
+        use revm_interpreter::instructions::gas_table_spec;
+        let default_table = gas_table_spec(spec);
+        let mut reprice = |opcode: u8, new_cost: u64| {
+            if new_cost as u16 != default_table[opcode as usize] {
+                evm.instruction.insert_gas(opcode, new_cost as u16);
+            }
+        };
+        reprice(0x54, schedule.warm_access_cost);
+    }
+    evm.inspect_one_tx(tx)?;
+    Ok(tracer.entries)
 }
 
 /// Override GasParams entries for EIP-8038 SLOAD + SSTORE repricing.

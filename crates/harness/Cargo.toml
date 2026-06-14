@@ -21,4 +21,5 @@ repricer-evm              = { workspace = true }
 serde_json                = { workspace = true }
 anyhow                    = { workspace = true }
 revm-context-interface    = { workspace = true }
+revm-interpreter          = { workspace = true }
 revm-primitives           = { workspace = true }
