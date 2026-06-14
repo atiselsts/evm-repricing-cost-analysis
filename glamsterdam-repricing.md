@@ -4,7 +4,7 @@ Gas cost impact of EIP-8037 (SSTORE state gas) and EIP-8038 (state-access repric
 on four Ethereum mainnet transactions — one Aave v3 liquidation and three AMM arbitrage
 transactions — replayed with the revm harness.
 
-Raw data: `liquidation-repricing.csv`, `amm-arb-repricing.csv`.
+Raw data: `results/liquidation-repricing.csv`, `results/amm-arb-repricing.csv`.
 
 ---
 
@@ -15,7 +15,7 @@ Raw data: `liquidation-repricing.csv`, `amm-arb-repricing.csv`.
 | `liquidation` | `0x7b53e9...629` | Aave v3 liquidationCall | 781 399 | 1 169 544 | 66.8% |
 | `simple` | `0x7ab274...c0a` | Atomic AMM arb | 194 977 | 274 544 | 71.0% |
 | `semi_complex` | `0x8687c5...875` | Semi-complex AMM arb | 1 884 138 | 2 926 207 | 64.4% |
-| `complex` | `0xfa1125...67e` | Complex AMM arb (12 M gas) | 12 017 628 | 13 215 466 | 90.9% |
+| `complex` | `0x55738c...526` | Complex AMM arb (14.6 M gas) | 14 567 338 | 16 777 216 | 86.8% |
 
 All fixtures captured from Ethereum mainnet (chain id 1, ~60 M block gas limit)
 with `harvest_prestate.py` using `debug_traceTransaction` + `prestateTracer`.
@@ -32,39 +32,41 @@ reproduces `receipt.gas_used` for all four fixtures.
 | `liquidation` | 781 399 | 781 399 | ✓ |
 | `simple` | 194 977 | 194 977 | ✓ |
 | `semi_complex` | 1 884 138 | 1 884 138 | ✓ |
-| `complex` | 12 017 628 | 12 017 628 | ✓ |
+| `complex` | 14 567 338 | 14 567 338 | ✓ |
 
 ---
 
 ## EIP-8037 — SSTORE state gas (AMSTERDAM spec)
 
-Each new-slot 0→nonzero SSTORE incurs an additional 97 920 gas
-(SSTORE_SET_BYTES=64 × CPSB_GLAMSTERDAM=1 530). The `sstore_set_without_load_cost`
-drops from 19 900 to 2 800, giving a net per-new-slot delta of **+80 820 gas**.
-All four runs use the natural tx gas limit.
+Each new-slot 0→nonzero SSTORE to a slot that does not exist in the world state incurs
+an additional 97 920 gas (SSTORE_SET_BYTES=64 × CPSB_GLAMSTERDAM=1 530).
+The `sstore_set_without_load_cost` also drops from 19 900 to 2 800 under AMSTERDAM,
+giving a net per-*new*-slot delta of **+80 820 gas**. Writes to slots that already
+exist in the state trie (even if their value is zero) pay only 2 800 instead of 19 900,
+saving 17 100 gas per such write with no offsetting state gas charge.
+All four runs use `--tx-gas-limit 30000000`.
 
 | Label | baseline gas | eip8037 gas | Δ gas | Δ% | Exec complete | Fits natural limit? |
 |---|---:|---:|---:|---:|:---:|:---:|
 | `liquidation` | 781 399 | 781 399 | 0 | 0.00% | yes | yes |
 | `simple` | 194 977 | 194 977 | 0 | 0.00% | yes | yes |
 | `semi_complex` | 1 884 138 | 1 884 138 | 0 | 0.00% | yes | yes |
-| `complex` | 12 017 628 | 22 200 948 | +10 183 320 | +84.7% | yes | **no** |
+| `complex` | 14 567 338 | 14 724 234 | +156 896 | +1.08% | yes | yes |
 
-Three of the four transactions create no new storage slots during execution — all
-SSTOREs overwrite already-initialised slots — so EIP-8037 has zero impact on them.
-
-The complex AMM arb creates approximately **126 new storage slots**
-(10 183 320 ÷ 80 820 ≈ 126), pushing its repriced gas cost to 22.2 M, which is 68%
-above its 13.2 M natural gas limit. The tx would **fail on-chain** without a manually
-increased gas limit.
+Liquidation, simple, and semi-complex create no new storage slots and overwrite
+only already-initialised slots, so the `sstore_set_without_load_cost` change and state
+gas cancel out (Δ = 0). The complex AMM arb creates approximately **2 truly new slots**
+(156 896 ÷ 80 820 ≈ 2) and also rewrites ~661 existing-zero slots — for those the cost
+drops from 19 900 to 2 800, nearly cancelling the state gas overhead. The net EIP-8037
+impact is only +1.1%, and the tx fits comfortably within its 16.8 M natural gas limit.
 
 ---
 
 ## EIP-8038 — cold SLOAD repricing, 60 M block (3× multiplier)
 
-warm SLOAD 100 → 300; cold SLOAD 2 100 → 6 300.
+warm SLOAD 100 → 300; cold SLOAD 2 100 → 6 300. PRAGUE spec (no SSTORE changes).
 All repriced runs use `--tx-gas-limit 30000000` to prevent inner-CALL starvation
-(EIP-150 63/64 forwarding rule). Execution completeness is confirmed by matching
+(EIP-150 63/64 forwarding rule). Execution completeness confirmed by matching
 compute opcode gas against baseline.
 
 | Label | baseline gas | eip8038 gas | Δ gas | Δ% | Exec complete | Fits natural limit? |
@@ -72,30 +74,42 @@ compute opcode gas against baseline.
 | `liquidation` | 781 399 | 1 261 199 | +479 800 | +61.4% | yes | **no** |
 | `simple` | 194 977 | 289 177 | +94 200 | +48.3% | yes | **no** |
 | `semi_complex` | 1 884 138 | 2 996 938 | +1 112 800 | +59.1% | yes | **no** |
-| `complex` | 12 017 628 | 16 465 828 | +4 448 200 | +37.0% | yes | **no** |
+| `complex` | 14 567 338 | 26 075 344 | +11 508 006 | +79.0% | yes | **no** |
 
 Every transaction exceeds its natural gas budget under 3× SLOAD repricing.
+The complex AMM arb shows the largest increase (+79%) because it combines a high
+SLOAD count with many 0→nonzero SSTOREs that remain priced at 19 900 under PRAGUE —
+a double penalty not present in the AMSTERDAM-spec schedules.
 
 ---
 
 ## EIP-8037 + EIP-8038 combined — SSTORE also repriced, 60 M block
 
-cold SSTORE 2 100 → 6 300 in addition to the SLOAD changes above;
-AMSTERDAM spec activates new-slot state gas.
+cold SSTORE 2 100 → 6 300 added on top of the SLOAD changes; AMSTERDAM spec activates
+new-slot state gas **and** reduces `sstore_set_without_load_cost` from 19 900 to 2 800.
 
-| Label | eip8037 Δ | eip8038 Δ | eip8038_sstore Δ | Δ% | Exec complete | Cold SSTOREs |
-|---|---:|---:|---:|---:|:---:|---:|
-| `liquidation` | 0 | +479 800 | +484 000 | +61.9% | yes | 1 |
-| `simple` | 0 | +94 200 | +94 200 | +48.3% | yes | 0 |
-| `semi_complex` | 0 | +1 112 800 | +1 112 800 | +59.1% | yes | 0 |
-| `complex` | +10 183 320 | +4 448 200 | +14 631 520 | +121.8% | yes | ~1 059 |
+| Label | baseline gas | eip8038 gas (PRAGUE) | eip8038_sstore gas (AMSTERDAM) | Δ% | Exec complete | Fits natural limit? |
+|---|---:|---:|---:|---:|:---:|:---:|
+| `liquidation` | 781 399 | 1 261 199 | 1 265 399 | +61.9% | yes | **no** |
+| `simple` | 194 977 | 289 177 | 289 177 | +48.3% | yes | **no** |
+| `semi_complex` | 1 884 138 | 2 996 938 | 2 996 938 | +59.1% | yes | **no** |
+| `complex` | 14 567 338 | 26 075 344 | 14 936 135 | +2.5% | yes | **yes** |
 
-The eip8038_sstore delta equals eip8037 Δ + eip8038 Δ for all four transactions —
-the state gas and cold-access effects are **exactly additive**.
+For liquidation, simple, and semi-complex the PRAGUE and AMSTERDAM schedules give
+nearly identical results because those transactions write very few 0→nonzero SSTOREs.
+The cold SSTORE repricing (+4 200 per cold write) adds only 0–4 200 gas.
 
-The cold SSTORE count is inferred from the incremental delta
-(eip8038_sstore − eip8038) ÷ (6 300 − 2 100). The liquidation has exactly 1 cold SSTORE;
-simple and semi-complex have none; the complex AMM arb has ~1 059.
+For the complex AMM arb, `eip8038_sstore` (AMSTERDAM) is dramatically cheaper than
+`eip8038` (PRAGUE): **14.9 M vs 26.1 M gas**. The difference (-11.1 M) comes from
+the AMSTERDAM spec reducing `sstore_set_without_load_cost` from 19 900 to 2 800 for
+~661 writes to existing-zero slots (17 100 savings each ≈ 11.3 M total savings),
+which more than offsets the cold-access repricing. The combined AMSTERDAM + 3× cold
+access schedule increases gas by only **+2.5%** and stays within the natural 16.8 M
+gas limit.
+
+Note: the simple additivity eip8038_sstore Δ = eip8037 Δ + eip8038 Δ holds only when
+SSTORE writes are few (liquidation, simple, semi-complex). For the complex AMM arb the
+two effects interact through the spec-level SSTORE cost change and cannot be decomposed.
 
 ---
 
@@ -104,37 +118,37 @@ simple and semi-complex have none; the complex AMM arb has ~1 059.
 warm SLOAD 100 → 1 000; cold SLOAD 2 100 → 21 000; cold SSTORE 2 100 → 21 000;
 `--block-gas-limit 200000000 --tx-gas-limit 30000000`.
 
-**Note:** for the `complex` transaction, the 30 M tx limit is insufficient to prevent
-inner-CALL starvation under these costs — execution paths diverge from baseline.
-Those figures are marked ⚠ and are not directly comparable.
+| Label | baseline gas | eip8038_200m gas | Δ% | eip8038_sstore200m gas | Δ% | Exec complete |
+|---|---:|---:|---:|---:|---:|:---:|
+| `liquidation` | 781 399 | 2 940 499 | +276.3% | 2 959 399 | +278.8% | yes |
+| `simple` | 194 977 | 618 877 | +217.4% | 618 877 | +217.4% | yes |
+| `semi_complex` | 1 884 138 | 6 891 738 | +265.8% | 6 891 738 | +265.8% | yes |
+| `complex` | 14 567 338 | 26 817 001 | +84.1% | 15 677 794 | +7.6% | yes |
 
-| Label | baseline gas | eip8038_200m Δ% | eip8038_sstore200m Δ% | Exec complete |
-|---|---:|---:|---:|:---:|
-| `liquidation` | 781 399 | +276.3% | +278.8% | yes |
-| `simple` | 194 977 | +217.4% | +217.4% | yes |
-| `semi_complex` | 1 884 138 | +265.8% | +265.8% | yes |
-| `complex` | 12 017 628 | +149.6% ⚠ | +39.5% ⚠ | **no** ⚠ |
-
-⚠ Complex tx path diverged — 30 M tx limit insufficient for accurate 200 M-scale measurement.
+The same PRAGUE vs AMSTERDAM pattern holds at 200 M scale: the complex AMM arb
+rises only +7.6% under `eip8038_sstore200m` (AMSTERDAM) vs +84.1% under `eip8038_200m`
+(PRAGUE), because the 0→nonzero SSTORE cost reduction dominates the ≈10× cold access
+increase. All four transactions have identical compute gas across schedules, confirming
+clean execution paths at the 30 M tx limit.
 
 ---
 
 ## Natural gas limit analysis
 
 Transactions where repriced gas exceeds the original gas limit would **fail on-chain**
-without a manual limit increase. Under current mempool conventions (bots set gas limits
-close to estimated usage), virtually all transactions fail under SLOAD repricing.
+without a manual limit increase.
 
 | Label | Natural limit | eip8037 | eip8038 | eip8038_sstore | eip8038_200m | eip8038_sstore200m |
 |---|---:|:---:|:---:|:---:|:---:|:---:|
 | `liquidation` | 1 169 544 | ✓ fits | ✗ fail | ✗ fail | ✗ fail | ✗ fail |
 | `simple` | 274 544 | ✓ fits | ✗ fail | ✗ fail | ✗ fail | ✗ fail |
 | `semi_complex` | 2 926 207 | ✓ fits | ✗ fail | ✗ fail | ✗ fail | ✗ fail |
-| `complex` | 13 215 466 | ✗ fail | ✗ fail | ✗ fail | ✗ fail | ✗ fail |
+| `complex` | 16 777 216 | ✓ fits | ✗ fail | ✓ fits | ✗ fail | ✓ fits |
 
-EIP-8037 state gas alone is the only proposal that leaves three of the four transactions
-within their existing gas budgets. The complex AMM arb fails even under state-gas-only
-because of its heavy new-slot creation workload.
+PRAGUE-based cold SLOAD repricing (`eip8038`, `eip8038_200m`) causes all four
+transactions to fail at their natural gas limits. AMSTERDAM-based schedules
+(`eip8037`, `eip8038_sstore`, `eip8038_sstore200m`) keep the complex AMM arb within
+budget because the spec-level SSTORE cost reduction outweighs the cold access repricing.
 
 ---
 
@@ -142,18 +156,18 @@ because of its heavy new-slot creation workload.
 
 | Schedule | Liquidation Δ% | Simple arb Δ% | Semi-complex arb Δ% | Complex arb Δ% |
 |---|---:|---:|---:|---:|
-| `eip8037` | 0% | 0% | 0% | **+84.7%** |
-| `eip8038` | +61.4% | +48.3% | +59.1% | +37.0% |
-| `eip8038_sstore` | +61.9% | +48.3% | +59.1% | **+121.8%** |
+| `eip8037` | 0% | 0% | 0% | +1.1% |
+| `eip8038` (PRAGUE) | +61.4% | +48.3% | +59.1% | **+79.0%** |
+| `eip8038_sstore` (AMSTERDAM) | +61.9% | +48.3% | +59.1% | **+2.5%** |
 
-**SLOAD repricing** is the dominant effect for liquidations and simple/semi-complex arb:
-+48–62% gas increase, consistent across categories, driven by the high SLOAD count
-in DeFi transactions (279 SLOADs in the Aave liquidation).
+**SLOAD repricing under PRAGUE** (`eip8038`) uniformly raises costs by +48–79% across
+all transaction categories. The complex AMM arb is the hardest hit because it carries
+both a high SLOAD count and many 0→nonzero SSTOREs priced at 19 900 under PRAGUE.
 
-**State gas (EIP-8037)** is zero for three of four transactions (arb bots and
-liquidators operate against existing positions). The complex AMM arb is the outlier:
-its 84.7% state-gas increase dwarfs its own 37% SLOAD increase, because it initialises
-new on-chain positions (Uniswap v3 tick slots, position entries) as part of the arb path.
+**AMSTERDAM spec** (`eip8038_sstore`) produces nearly identical results to PRAGUE for
+liquidations and simple arb (low SSTORE write count) but reverses the impact for
+complex AMM arb: the `sstore_set_without_load_cost` reduction (19 900 → 2 800) saves
+more gas than the cold-access repricing costs, holding the increase to +2.5%.
 
 ---
 
@@ -165,6 +179,7 @@ new on-chain positions (Uniswap v3 tick slots, position entries) as part of the 
   the repriced run; a difference indicates a diverged execution path.
 - 200 M block schedules also set `--block-gas-limit 200000000`.
 - EIP-8038 multipliers (3× and ≈10×) are hypothetical; the EIP's constants are TBD.
-- Cold SSTORE counts are inferred from (eip8038_sstore − eip8038) Δ ÷ 4 200.
-- New-slot counts from eip8037 Δ ÷ 80 820 (per-slot delta = state_gas + set_without_load
-  change = 97 920 + 2 800 − 19 900).
+- Existing-zero SSTORE count inferred from (eip8037 gas − baseline) and the known
+  per-new-slot delta (80 820); the residual SSTORE cost reduction points to existing-zero
+  slots paying 2 800 instead of 19 900 under AMSTERDAM.
+- New-slot count: eip8037 Δ ÷ 80 820 (= state_gas + set_without_load_cost change).

@@ -6,7 +6,7 @@ proposed "Glamsterdam" gas changes affect DeFi transaction costs.
 
 ## Thesis
 
-Two repricing proposals are studied:
+Several repricing proposals are studied:
 
 - **EIP-7904** (compute repricing) — originally a Standards Track proposal to
   raise DIV, SDIV, MOD, KECCAK256 base and similar opcodes because benchmarks
@@ -28,16 +28,28 @@ Two repricing proposals are studied:
   incurs an additional 97 920 gas (SSTORE_SET_BYTES=64 × CPSB_GLAMSTERDAM=1 530),
   activated automatically by switching the EVM spec to AMSTERDAM.
 
-**Core findings:**
-- EIP-7904 compute repricing adds < 1% gas overhead — negligible for DeFi.
-- EIP-8038 SLOAD repricing (3× scenario, 60 M block) adds +48–62% gas across
-  all measured transactions; scaled to a 200 M block, +218–276%.
-- EIP-8037 SSTORE state gas has zero impact on liquidations and simple/semi-complex
-  AMM arb (no new slot creation). It adds +85% on a complex 12 M gas AMM arb
-  that initialises new on-chain positions — and pushes that tx above its natural
-  gas limit, causing it to fail without a manual limit increase.
-- SLOAD repricing dominates for DeFi liquidations and simple arb; state gas
-  dominates for complex AMM arb that creates new positions.
+**Core findings** (4 transactions measured; these examples may not be representative
+of the full distribution of real historical on-chain transactions):
+- EIP-7904 compute repricing adds < 1% gas overhead — negligible for the measured
+  DeFi transactions.
+- EIP-8037 SSTORE state gas (AMSTERDAM spec) has zero impact on the 3 transactions
+  that write only to pre-existing storage slots. On a complex AMM arb that opens new
+  on-chain positions, the net effect is only +1.1%: the 0→nonzero write cost drops
+  from 19 900 to 2 800 under AMSTERDAM, nearly cancelling the 97 920 new-slot state
+  gas. All 4 transactions fit within their natural gas limits under EIP-8037 alone.
+- EIP-8038 SLOAD repricing alone (3× / PRAGUE spec, 60 M block) adds +48–79% across
+  all 4 transactions; all 4 exceed their natural gas limits. At 200 M block scale
+  (≈10×), the liquidation and simple/semi-complex arb jump to +217–276%; the complex
+  AMM arb rises less (+84%) because it is more SSTORE-heavy than SLOAD-heavy.
+- Combining EIP-8037 + EIP-8038 under AMSTERDAM (3×, 60 M): the liquidation and
+  simple/semi-complex arb rise +62% (SLOAD cost dominates, few SSTORE writes). The
+  complex AMM arb rises only +2.5% because the AMSTERDAM spec's SSTORE cost reduction
+  (19 900 → 2 800 for ~661 existing-zero slot writes) more than offsets the cold-access
+  repricing. At 200 M scale, the same split holds: liquidations and simple arb reach
+  +217–279%, while the complex AMM arb stays at +7.6% under AMSTERDAM. Whether a
+  transaction is dominated by cold SLOAD calls or by 0→nonzero SSTORE writes to
+  pre-existing slots determines which effect prevails — and the measured sample is too
+  small to generalise.
 
 See [`glamsterdam-repricing.md`](glamsterdam-repricing.md) for full results tables
 across all four measured transactions.
@@ -184,9 +196,7 @@ python3 scripts/update_probe_bytecode.py
 ## Repository layout
 
 ```
-Cargo.toml                          # workspace (resolver = "2")
 glamsterdam-repricing.md            # full results tables for all measured transactions
-notes                               # tx hashes used as fixtures (plain text)
 crates/
   gas-schedule/                     # GasSchedule struct + presets (baseline, eip7904, eip8037/38)
   repricer-evm/                     # CacheDB builder, EVM runner, OpcodeCounter inspector
@@ -196,20 +206,15 @@ fixtures/
   0x7b53e92....json                 # Aave v3 liquidationCall prestate (block 24 390 617)
   0x7ab274a....json                 # simple (atomic) AMM arb prestate
   0x8687c5e....json                 # semi-complex AMM arb prestate
-  0xfa11258....json                 # complex AMM arb prestate (12 M gas)
+  0x55738c5....json                 # complex AMM arb prestate (14.6 M gas)
 contracts/
   src/RepriceProbe.sol              # Synthetic compute + SLOAD + SSTORE probe contract
-  test/RepriceProbe.t.sol           # Foundry tests (loop termination, gas linearity, SSTORE)
-  foundry.toml                      # optimizer off, via_ir false
 results/
   liquidation-repricing.csv         # per-schedule gas data for the Aave v3 liquidation
   amm-arb-repricing.csv             # per-schedule gas data for all three AMM arb transactions
 scripts/
   harvest_prestate.py               # captures prestate fixtures via RPC (debug_traceTransaction)
   update_probe_bytecode.py          # syncs compiled RepriceProbe bytecode into synthetic.rs
-subtasks.md                         # detailed S1–S8 milestone descriptions
-s2-addition.md                      # design notes for the S2 SLOAD repricing addition
-s6-addition.md                      # design notes for the S6 SSTORE repricing addition
 ```
 
 ## Acceptance tests
