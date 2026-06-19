@@ -218,9 +218,24 @@ impl GasSchedule {
         self.cold_sload_total - self.warm_access_cost
     }
 
-    /// Cold SSTORE total cost — used to override GasId::cold_storage_cost.
+    /// Cold SSTORE cost — used to override GasId::cold_storage_cost.
+    ///
+    /// revm always charges `sstore_static` (the warm access) and *adds*
+    /// `cold_storage_cost` on top when the slot is cold. Two models exist:
+    ///
+    /// * Legacy / EIP-2929 (baseline, EIP-8037): the cold surcharge is added on
+    ///   top of the warm-inclusive operation cost, so `cold_storage_cost` is the
+    ///   full cold total (e.g. mainnet 2100). Reproduces `receipt.gas_used`.
+    /// * EIP-8038 restructured model (`sstore_write_cost` set): access cost is
+    ///   `COLD_STORAGE_ACCESS` *or* `WARM_ACCESS` (mutually exclusive), so the
+    ///   total cold access must be `cold_sstore_total`; subtract the
+    ///   always-charged warm static, mirroring `cold_sload_surcharge`.
     pub fn cold_sstore_cost(&self) -> u64 {
-        self.cold_sstore_total
+        if self.sstore_write_cost.is_some() {
+            self.cold_sstore_total - self.warm_access_cost
+        } else {
+            self.cold_sstore_total
+        }
     }
 }
 
