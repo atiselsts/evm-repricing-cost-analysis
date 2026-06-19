@@ -40,6 +40,18 @@ pub struct GasSchedule {
     /// Cold SSTORE total — overrides GasId::cold_storage_cost, which is shared
     /// with SLOAD cold access. Kept equal to cold_sload_total when repricing both.
     pub cold_sstore_total: u64,
+
+    // ── EIP-8038 SSTORE write cost (PR #11802) ───────────────────────────────
+    /// STORAGE_WRITE — the per-write cost for every SSTORE (warm or cold),
+    /// charged in addition to the warm static and any cold access surcharge.
+    /// Overrides GasId::sstore_reset_without_cold_load_cost and
+    /// GasId::sstore_set_without_load_cost (both equal under the new model).
+    /// None = use the spec default (2,800 for BERLIN+/AMSTERDAM).
+    pub sstore_write_cost: Option<u64>,
+
+    /// STORAGE_CLEAR_REFUND — refund for clearing a storage slot (nonzero→zero).
+    /// None = use the spec default (4,800 for LONDON/PRAGUE/AMSTERDAM).
+    pub sstore_clearing_refund: Option<u64>,
 }
 
 impl GasSchedule {
@@ -59,6 +71,8 @@ impl GasSchedule {
             warm_access_cost: 100,
             cold_sload_total: 2_100,
             cold_sstore_total: 2_100,
+            sstore_write_cost: None,
+            sstore_clearing_refund: None,
         }
     }
 
@@ -159,6 +173,40 @@ impl GasSchedule {
             warm_access_cost: 1_000,
             cold_sload_total: 21_000,
             cold_sstore_total: 21_000,
+            ..Self::baseline()
+        }
+    }
+
+    /// EIP-8038 PR #11802 merged values, 60 M block (AMSTERDAM spec).
+    ///
+    /// COLD_STORAGE_ACCESS 2100→3000, WARM_ACCESS 100 (unchanged),
+    /// STORAGE_WRITE 2800→10000 (applies to every SSTORE write),
+    /// STORAGE_CLEAR_REFUND 4800→12480.
+    pub fn eip8038_pr11802() -> Self {
+        Self {
+            spec: SpecId::AMSTERDAM,
+            warm_access_cost: 100,
+            cold_sload_total: 3_000,
+            cold_sstore_total: 3_000,
+            sstore_write_cost: Some(10_000),
+            sstore_clearing_refund: Some(12_480),
+            ..Self::baseline()
+        }
+    }
+
+    /// EIP-8038 PR #11802 values scaled to 200 M block (AMSTERDAM spec).
+    ///
+    /// All costs scaled by 200/60 ≈ 3.33× from the 60 M values:
+    /// WARM_ACCESS 300, COLD_STORAGE_ACCESS 10000, STORAGE_WRITE 33000,
+    /// STORAGE_CLEAR_REFUND 41500.
+    pub fn eip8038_pr11802_200m() -> Self {
+        Self {
+            spec: SpecId::AMSTERDAM,
+            warm_access_cost: 300,
+            cold_sload_total: 10_000,
+            cold_sstore_total: 10_000,
+            sstore_write_cost: Some(33_000),
+            sstore_clearing_refund: Some(41_500),
             ..Self::baseline()
         }
     }

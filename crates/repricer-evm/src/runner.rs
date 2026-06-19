@@ -413,12 +413,40 @@ pub fn run_fixture_sstore_addresses(
 
 /// Override GasParams entries for EIP-8038 SLOAD + SSTORE repricing.
 pub fn apply_gas_params(gp: &mut GasParams, schedule: &GasSchedule) {
-    gp.override_gas([
-        // cold SLOAD surcharge (index 23): warm_base + this = cold_sload_total
+    let warm = schedule.warm_access_cost;
+
+    // Always override cold access costs.
+    let mut pairs: Vec<(GasId, u64)> = vec![
         (GasId::cold_storage_additional_cost(), schedule.cold_sload_surcharge()),
-        // cold SSTORE total (index 24): shared cold cost for SSTORE cold access
         (GasId::cold_storage_cost(),            schedule.cold_sstore_cost()),
-    ]);
+    ];
+
+    // If warm_access_cost is non-baseline, scale the SSTORE warm static too.
+    // (SLOAD warm base is patched in the static GasTable; SSTORE warm base lives in GasParams.)
+    if warm != 100 {
+        pairs.push((GasId::sstore_static(), warm));
+    }
+
+    // STORAGE_WRITE override.
+    // STORAGE_WRITE is the write cost charged *in addition to* the warm static
+    // (WARM_ACCESS). In GasParams terms, sstore_reset_without_cold_load_cost is
+    // the cost above sstore_static, so it equals STORAGE_WRITE directly.
+    // Refund is also STORAGE_WRITE (EIP-8038: "STORAGE_WRITE is refunded if
+    // original == new"), leaving only the warm static as net cost for restorations.
+    if let Some(sw) = schedule.sstore_write_cost {
+        pairs.push((GasId::sstore_reset_without_cold_load_cost(), sw));
+        pairs.push((GasId::sstore_set_without_load_cost(),        sw));
+        // Restoration refund: full STORAGE_WRITE refunded for 0→X→0 and X→Y→X.
+        pairs.push((GasId::sstore_reset_refund(), sw));
+        pairs.push((GasId::sstore_set_refund(),   sw));
+    }
+
+    // STORAGE_CLEAR_REFUND override.
+    if let Some(cr) = schedule.sstore_clearing_refund {
+        pairs.push((GasId::sstore_clearing_slot_refund(), cr));
+    }
+
+    gp.override_gas(pairs);
 }
 
 // ── EVM execution ────────────────────────────────────────────────────────────

@@ -43,6 +43,10 @@ enum ScheduleName {
     Eip8038Sstore,
     /// EIP-8037 + EIP-8038 scaled for 200 M gas-limit block (AMSTERDAM spec)
     Eip8038Sstore200m,
+    /// EIP-8038 PR #11802 merged values, 60 M block (AMSTERDAM spec)
+    Eip8038Pr11802,
+    /// EIP-8038 PR #11802 values scaled to 200 M block (AMSTERDAM spec)
+    Eip8038Pr11802_200m,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -63,6 +67,8 @@ fn main() -> anyhow::Result<()> {
         ScheduleName::Eip8037               => (GasSchedule::eip8037(),                "eip8037"),
         ScheduleName::Eip8038Sstore         => (GasSchedule::eip8038_sstore(),         "eip8038_sstore"),
         ScheduleName::Eip8038Sstore200m     => (GasSchedule::eip8038_sstore_200m(),    "eip8038_sstore_200m"),
+        ScheduleName::Eip8038Pr11802        => (GasSchedule::eip8038_pr11802(),        "eip8038_pr11802"),
+        ScheduleName::Eip8038Pr11802_200m   => (GasSchedule::eip8038_pr11802_200m(),   "eip8038_pr11802_200m"),
     };
 
     let result = runner::run_fixture(&fixture, &schedule, name, args.block_gas_limit, args.tx_gas_limit)?;
