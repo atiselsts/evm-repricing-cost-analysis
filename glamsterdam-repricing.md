@@ -68,6 +68,10 @@ giving a net per-*new*-slot delta of **+80 820 gas**. Writes to slots that alrea
 exist in the state trie (even if their value is zero) pay only 2 800 instead of 19 900,
 saving 17 100 gas per such write with no offsetting state gas charge.
 
+The `CPSB_GLAMSTERDAM` value of 1 530 is calibrated for a **150 M gas reference block**,
+chosen as a forward-looking midpoint between the current ~60 M limit and an anticipated
+~300 M future limit.
+
 | Label | baseline gas | eip8037 gas | Δ gas | Δ% |
 |---|---:|---:|---:|---:|
 | `liquidation` | 781 399 | 781 399 | 0 | 0.00% |
@@ -85,9 +89,65 @@ to the SLOAD repricing effect shown below.
 
 ---
 
-## EIP-8038 — cold SLOAD repricing, 60 M block (3× multiplier, PRAGUE)
+## EIP-8038 PR #11802 — merged values (AMSTERDAM spec)
 
-warm SLOAD 100 → 300; cold SLOAD 2 100 → 6 300. PRAGUE spec (SSTORE costs unchanged).
+These are the actual constants from the merged EIP-8038 PR #11802. Costs are derived from
+empirical benchmarking at a 100 Mgas/s performance target and are not calibrated to a
+specific block gas limit.
+
+| Constant | Old | New |
+|---|---:|---:|
+| `WARM_ACCESS` | 100 | 100 (unchanged) |
+| `COLD_STORAGE_ACCESS` | 2 100 | 3 000 |
+| `STORAGE_WRITE` | 2 800 | 10 000 |
+| `STORAGE_CLEAR_REFUND` | 4 800 | 12 480 |
+
+| Label | baseline gas | eip8038_pr11802 gas | Δ gas | Δ% | path_diverged |
+|---|---:|---:|---:|---:|:---:|
+| `liquidation` | 781 399 | 1 122 399 | +341 000 | +43.6% | no |
+| `simple` | 194 977 | 285 877 | +90 900 | +46.6% | no |
+| `intermediate` | 1 884 138 | 3 073 038 | +1 188 900 | +63.1% | no |
+| `complex` (TX_GAS_LIMIT_CAP = 16.8 M) | 10 018 653 | 16 384 620 | +6 365 967 | +63.5% | **yes** |
+| `complex` (100 M cap) | 10 018 653 | 16 772 401 | +6 753 748 | +67.4% | yes† |
+
+`complex` completes at the outer level but some inner subcalls run OOG due to the dominant
+STORAGE_WRITE cost: 1 261 SSTOREs × 10 000 ≈ 12.6 M gas from writes alone. At TX_GAS_LIMIT_CAP
+(16.8 M), the constrained forwarded gas causes major inner path divergence (+63.5%). At a
+100 M cap, nearly the full code path runs (+67.4%), revealing the true cost increase.
+
+† Minor residual path divergence at 100 M cap (compute gas 142 871 vs 147 695 at baseline,
+a 4 824-gas difference); some deeply nested subcall still receives insufficient forwarded gas.
+
+For a detailed breakdown including refund modeling, see `results/eip8038-pr11802.md`.
+
+---
+
+## EIP-8037 + EIP-8038 combined — hypothetical 3× SLOAD/SSTORE scenario (AMSTERDAM)
+
+The following results use a **hypothetical** uniform 3× multiplier (warm 100→300, cold
+2100→6300 for both SLOAD and SSTORE) to stress-test the combined repricing under the
+AMSTERDAM spec. This is not derived from any actual EIP — it is a sensitivity scenario.
+The merged PR #11802 values above are the authoritative reference.
+
+| Label | baseline gas | eip8038_sstore gas | Δ% vs baseline | path_diverged |
+|---|---:|---:|---:|:---:|
+| `liquidation` | 781 399 | 1 265 399 | +61.94% | no |
+| `simple` | 194 977 | 289 177 | +48.31% | no |
+| `intermediate` | 1 884 138 | 2 996 938 | +59.06% | no |
+| `complex` | 10 018 653 | 15 947 493 | +59.18% | no |
+
+**`complex` at 3× AMSTERDAM**: the transaction fits within TX_GAS_LIMIT_CAP and completes
+its full code path (path_diverged=no). This contrasts with the PRAGUE eip8038 (3×) result
+where `complex` saturates the cap (see below). The AMSTERDAM SSTORE restructuring —
+primarily the drop in `sstore_set_without_load_cost` (19 900 → 2 800, saving 17 100 per
+first-write-to-zero SSTORE) — is the reason `complex` fits under AMSTERDAM but not PRAGUE.
+
+---
+
+## EIP-8038 — SLOAD repricing only (hypothetical 3×, PRAGUE spec)
+
+For comparison: warm SLOAD 100 → 300; cold SLOAD 2 100 → 6 300; PRAGUE spec (SSTORE
+costs unchanged). This isolates the SLOAD-only repricing effect.
 
 | Label | baseline gas | eip8038 gas | Δ gas | Δ% | path_diverged |
 |---|---:|---:|---:|---:|:---:|
@@ -96,107 +156,48 @@ warm SLOAD 100 → 300; cold SLOAD 2 100 → 6 300. PRAGUE spec (SSTORE costs un
 | `intermediate` | 1 884 138 | 2 996 938 | +1 112 800 | +59.06% | no |
 | `complex` | 10 018 653 | 16 776 237 | +6 757 584 | +67.45% | **yes** |
 
-All four transactions are SLOAD-heavy and see +48–67% increases. `complex` is the only
-transaction that hits TX_GAS_LIMIT_CAP under this schedule (16 776 237 vs 16 777 216
-cap) — it saturates the limit and some inner logic is skipped. The reported delta for
-`complex` therefore reflects a degraded execution, not the full original code path.
+`complex` saturates TX_GAS_LIMIT_CAP under this PRAGUE schedule (16 776 237 vs 16 777 216
+cap). The AMSTERDAM SSTORE restructuring (section above) resolves this.
 
 ---
 
-## EIP-8037 + EIP-8038 combined — SSTORE also repriced, 60 M block (AMSTERDAM)
-
-cold SSTORE 2 100 → 6 300 added on top of the SLOAD changes; AMSTERDAM spec activates
-new-slot state gas **and** reduces `sstore_set_without_load_cost` from 19 900 to 2 800.
-
-| Label | baseline gas | eip8038 (PRAGUE) | eip8038_sstore (AMSTERDAM) | Δ% vs baseline | path_diverged |
-|---|---:|---:|---:|---:|:---:|
-| `liquidation` | 781 399 | 1 261 199 | 1 265 399 | +61.94% | no |
-| `simple` | 194 977 | 289 177 | 289 177 | +48.31% | no |
-| `intermediate` | 1 884 138 | 2 996 938 | 2 996 938 | +59.06% | no |
-| `complex` | 10 018 653 | 16 776 237 | 15 947 493 | +59.18% | no |
-
-**`simple` and `intermediate`**: PRAGUE and AMSTERDAM give identical results. Neither
-transaction has cold SSTOREs or new-slot SSTOREs at `TX_GAS_LIMIT_CAP`, so the AMSTERDAM
-SSTORE restructuring has no effect.
-
-**`liquidation`**: AMSTERDAM is marginally *more* expensive than PRAGUE (+1 265 399 vs
-+1 261 199, a Δ of +4 200). This indicates 1 cold SSTORE (+4 200 surcharge from repricing)
-and no new-slot SSTOREs to benefit from the restructuring saving. With `TX_GAS_LIMIT_CAP`
-giving full execution budget, the AMSTERDAM restructuring provides no savings here.
-
-**`complex`**: This is the most interesting case. Under PRAGUE eip8038, `complex`
-saturates `TX_GAS_LIMIT_CAP` (`path_diverged=yes`, 16 776 237 gas). Under AMSTERDAM
-eip8038_sstore, the same transaction uses only 15 947 493 gas (`path_diverged=no`).
-The AMSTERDAM SSTORE cost restructuring — primarily the drop in `sstore_set_without_load_cost`
-(19 900 → 2 800, saving 17 100 per first-write-to-zero SSTORE) — saves enough gas that
-`complex` fits under the `TX_GAS_LIMIT_CAP` and completes its full original code path.
-In other words: **for `complex`, switching from PRAGUE to AMSTERDAM can be the difference
-between a truncated and a complete execution under EIP-7825**.
-
----
-
-## EIP-8038 — 200 M block scaling (≈10× multiplier)
-
-warm SLOAD 100 → 1 000; cold SLOAD 2 100 → 21 000; cold SSTORE 2 100 → 21 000
-(AMSTERDAM spec for `eip8038_sstore200m`); `--block-gas-limit 200000000`.
-
-| Label | baseline gas | eip8038_200m | Δ% | eip8038_sstore200m | Δ% | path_diverged (200m) |
-|---|---:|---:|---:|---:|---:|:---:|
-| `liquidation` | 781 399 | 2 940 499 | +276.31% | 2 959 399 | +278.73% | no / no |
-| `simple` | 194 977 | 618 877 | +217.41% | 618 877 | +217.41% | no / no |
-| `intermediate` | 1 884 138 | 6 891 738 | +265.78% | 6 891 738 | +265.78% | no / no |
-| `complex` | 10 018 653 | 16 765 262 | +67.34% | 16 577 952 | +65.47% | **yes / yes** |
-
-At 200 M block gas limit scaling, `liquidation`, `simple`, and `intermediate` all
-complete their full execution paths within `TX_GAS_LIMIT_CAP` (path_diverged=no). Gas
-increases of +218–278% reflect the full SLOAD-heavy cost of these transactions under
-a 10× SLOAD multiplier.
-
-`complex` saturates `TX_GAS_LIMIT_CAP` under both 200 M schedules (path_diverged=yes
-for both). At 10× SLOAD costs, `complex` cannot fit within 16.8 M gas even under
-AMSTERDAM's SSTORE savings — the transaction's SLOAD-heaviness dominates. The reported
-gas figures reflect degraded executions.
-
----
-
-## Cross-category summary (60 M block, TX_GAS_LIMIT_CAP)
+## Cross-schedule summary (TX_GAS_LIMIT_CAP)
 
 | Schedule | Liquidation Δ% | Simple Δ% | Intermediate Δ% | Complex Δ% | Complex path |
 |---|---:|---:|---:|---:|:---:|
 | `eip8037` | 0.00% | 0.00% | 0.00% | +1.61% | no |
-| `eip8038` (PRAGUE) | +61.40% | +48.31% | +59.06% | +67.45% | **yes** |
-| `eip8038_sstore` (AMSTERDAM) | +61.94% | +48.31% | +59.06% | +59.18% | no |
+| `eip8038_pr11802` (actual, AMSTERDAM) | +43.6% | +46.6% | +63.1% | +63.5% | **yes** |
+| `eip8038` (hyp. 3×, PRAGUE) | +61.40% | +48.31% | +59.06% | +67.45% | **yes** |
+| `eip8038_sstore` (hyp. 3×, AMSTERDAM) | +61.94% | +48.31% | +59.06% | +59.18% | no |
 
 Key observations:
 
 1. **EIP-8037 alone** has negligible impact: 0% for three transactions; +1.61% for
-   the complex arb (which creates 2 new storage slots). In all cases, SLOAD repricing
-   dominates by a factor of ≥30×.
+   the complex arb (which creates 2 new storage slots). SLOAD/SSTORE repricing dominates
+   by a factor of ≥30×.
 
-2. **SLOAD repricing** (EIP-8038, PRAGUE) raises costs by +48–67% across all four
-   transactions. The spread reflects each transaction's mix of cold vs warm SLOADs.
+2. **Merged PR #11802 values** produce +44–63% increases. The dominant cost is
+   STORAGE_WRITE (10 000 per SSTORE write), not cold access. This causes inner subcall
+   OOG in `complex` (path_diverged=yes) without saturating the cap outright.
 
-3. **AMSTERDAM vs PRAGUE for `complex`**: AMSTERDAM's SSTORE restructuring prevents
-   TX_GAS_LIMIT_CAP saturation — the transaction completes its full original code path
-   under AMSTERDAM but not under PRAGUE. This is a qualitative difference, not just a
-   cost difference.
+3. **AMSTERDAM vs PRAGUE for `complex`**: under the hypothetical 3× scenario, AMSTERDAM's
+   SSTORE restructuring prevents TX_GAS_LIMIT_CAP saturation — the transaction completes
+   its full code path under AMSTERDAM (path_diverged=no) but not under PRAGUE
+   (path_diverged=yes, gas = 16 776 237 ≈ cap). This is a qualitative difference.
 
-4. **AMSTERDAM vs PRAGUE for the other three**: The difference is ≤0.5 percentage points
-   (no first-write-to-zero SSTOREs to benefit from restructuring, at most 1 cold SSTORE
-   for liquidation). For these transactions the spec choice is irrelevant.
-
-5. **200 M block scaling**: `complex` cannot complete its full execution at 10× SLOAD
-   costs regardless of spec. The other three complete fully, with +218–278% increases
-   that scale approximately linearly with the SLOAD multiplier.
+4. **AMSTERDAM vs PRAGUE for the other three**: the difference is ≤0.5 percentage points.
+   For these transactions the spec choice has no material effect.
 
 ---
 
 ## Methodology notes
 
-- All runs use **TX_GAS_LIMIT_CAP = 16 777 216** (EIP-7825, 2^24) as the uniform
-  tx gas limit. This is not the transactions' on-chain gas limits.
-- 200 M block schedules set `--block-gas-limit 200000000`.
-- EIP-8038 multipliers (3× and ≈10×) are hypothetical; the EIP's constants are TBD.
+- All runs use **TX_GAS_LIMIT_CAP = 16 777 216** (EIP-7825, 2²⁴) as the uniform tx gas limit.
+- **EIP-8037** `CPSB_GLAMSTERDAM = 1 530` is calibrated for a **150 M gas reference block**.
+- **EIP-8038 PR #11802** constants are derived from empirical benchmarking at 100 Mgas/s
+  and are **not tied to a specific block gas limit**.
+- The "hypothetical 3×" schedules (`eip8038`, `eip8038_sstore`) are synthetic sensitivity
+  scenarios, not based on any actual EIP.
 - `path_diverged` is detected by comparing compute-opcode gas between the repriced
   and baseline runs; a difference indicates the tx took a different code path.
 - SSTORE classification for EIP-8037: `complex` creates new slots confirmed by the
